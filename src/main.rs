@@ -1,13 +1,16 @@
 mod dht;
 
 use dht::{Peer, DHT};
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::rustls::{NoClientAuth, ServerConfig};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{
+    rustls::{Certificate, PrivateKey, ServerConfig},
+    TlsAcceptor,
+};
 
 #[tokio::main]
 async fn main() {
@@ -29,13 +32,20 @@ async fn start_server(dht: Arc<Mutex<DHT>>) {
     let cert_file = &mut BufReader::new(File::open("cert.pem").unwrap());
     let key_file = &mut BufReader::new(File::open("key.pem").unwrap());
 
-    let certs = rustls::internal::pemfile::certs(cert_file).unwrap();
-    let mut keys = rustls::internal::pemfile::pkcs8_private_keys(key_file).unwrap();
-    let config = ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, keys.remove(0))
-        .unwrap();
+    let certs: Vec<Certificate> = certs(cert_file)
+        .unwrap()
+        .into_iter()
+        .map(Certificate)
+        .collect();
+    let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)
+        .unwrap()
+        .into_iter()
+        .map(PrivateKey)
+        .collect();
+
+    let mut config = ServerConfig::new(NoClientAuth::new());
+    config.set_single_cert(certs, keys.remove(0)).unwrap();
+
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let listener = TcpListener::bind("0.0.0.0:8443").await.unwrap();
