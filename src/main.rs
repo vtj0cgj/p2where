@@ -1,6 +1,7 @@
 mod dht;
 
 use dht::{Peer, DHT};
+use rustls::server::NoClientAuth;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use std::fs::File;
 use std::io::BufReader;
