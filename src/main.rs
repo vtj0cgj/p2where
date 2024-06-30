@@ -1,99 +1,64 @@
-mod dht;
-
-use dht::{Peer, DHT};
-use rustls::server::NoClientAuth;
-use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::fs::File;
-use std::io::BufReader;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{
-    rustls::{Certificate, PrivateKey, ServerConfig},
-    TlsAcceptor,
-};
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::protocol::Message;
 
-#[tokio::main]
-async fn main() {
-    let dht = Arc::new(Mutex::new(DHT::new()));
-
-    let dht_clone = dht.clone();
-    tokio::spawn(async move {
-        let peer = dht_clone.lock().unwrap().add_peer("127.0.0.1", 8080);
-        println!("Added peer: {:?}", peer);
-
-        let peers = dht_clone.lock().unwrap().find_peers();
-        println!("Peers in DHT: {:?}", peers);
-    });
-
-    start_server(dht.clone()).await;
+#[derive(Serialize, Deserialize)]
+enum PeerMessage {
+    Connect(String), // IP address to connect to
+    Data(Vec<u8>),   // Data to route
 }
 
-async fn start_server(dht: Arc<Mutex<DHT>>) {
-    let cert_file = &mut BufReader::new(File::open("cert.pem").unwrap());
-    let key_file = &mut BufReader::new(File::open("key.pem").unwrap());
+type Peers = Arc<Mutex<HashMap<String, tokio_tungstenite::WebSocketStream<TcpStream>>>>;
 
-    let certs: Vec<Certificate> = certs(cert_file)
-        .unwrap()
-        .into_iter()
-        .map(Certificate)
-        .collect();
-    let mut keys: Vec<PrivateKey> = pkcs8_private_keys(key_file)
-        .unwrap()
-        .into_iter()
-        .map(PrivateKey)
-        .collect();
+async fn handle_connection(raw_stream: TcpStream, peers: Peers) {
+    let ws_stream = accept_async(raw_stream)
+        .await
+        .expect("Error during the websocket handshake occurred");
+    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    let mut config = ServerConfig::new(NoClientAuth::new());
-    config.set_single_cert(certs, keys.remove(0)).unwrap();
-
-    let acceptor = TlsAcceptor::from(Arc::new(config));
-
-    let listener = TcpListener::bind("0.0.0.0:8443").await.unwrap();
-    println!("Server listening on port 8443");
-
-    loop {
-        let (stream, addr) = listener.accept().await.unwrap();
-        let acceptor = acceptor.clone();
-        tokio::spawn(async move {
-            handle_connection(acceptor, stream, addr).await;
-        });
+    while let Some(msg) = ws_receiver.next().await {
+        let msg = msg.expect("Failed to read message");
+        if msg.is_text() {
+            let peer_msg: PeerMessage =
+                serde_json::from_str(msg.to_text().unwrap()).expect("Invalid message format");
+            match peer_msg {
+                PeerMessage::Connect(peer_addr) => {
+                    let new_stream = TcpStream::connect(peer_addr)
+                        .await
+                        .expect("Failed to connect to peer");
+                    let peer_ws_stream = accept_async(new_stream)
+                        .await
+                        .expect("WebSocket handshake failed");
+                    peers.lock().unwrap().insert(peer_addr, peer_ws_stream);
+                }
+                PeerMessage::Data(data) => {
+                    for (_addr, peer) in peers.lock().unwrap().iter_mut() {
+                        peer.send(Message::Binary(data.clone()))
+                            .await
+                            .expect("Failed to send data to peer");
+                    }
+                }
+            }
+        }
     }
 }
 
-async fn handle_connection(acceptor: TlsAcceptor, stream: TcpStream, addr: std::net::SocketAddr) {
-    println!("Accepted connection from {:?}", addr);
+#[tokio::main]
+async fn main() {
+    let addr = "127.0.0.1:8080";
+    let listener = TcpListener::bind(addr).await.expect("Failed to bind");
+    let peers: Peers = Arc::new(Mutex::new(HashMap::new()));
 
-    match acceptor.accept(stream).await {
-        Ok(mut tls_stream) => {
-            println!("TLS handshake completed with {:?}", addr);
+    println!("Listening on: {}", addr);
 
-            let (mut reader, mut writer) = io::split(tls_stream);
-
-            // Example of reading data from the client
-            let mut buf = vec![0; 1024];
-            match reader.read(&mut buf).await {
-                Ok(n) if n == 0 => {
-                    // Connection was closed
-                    println!("Connection closed by {:?}", addr);
-                }
-                Ok(n) => {
-                    // Process the data
-                    println!("Received data from {:?}: {:?}", addr, &buf[..n]);
-                }
-                Err(e) => {
-                    println!("Failed to read from connection: {:?}", e);
-                }
-            }
-
-            // Example of sending data to the client
-            let response = b"Hello from server!";
-            if let Err(e) = writer.write_all(response).await {
-                println!("Failed to write to connection: {:?}", e);
-            }
-        }
-        Err(e) => {
-            println!("TLS handshake failed with {:?}: {:?}", addr, e);
-        }
+    while let Ok((stream, _)) = listener.accept().await {
+        let peers = peers.clone();
+        tokio::spawn(async move {
+            handle_connection(stream, peers).await;
+        });
     }
 }
