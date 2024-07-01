@@ -1,9 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio_tun::TunBuilder;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -35,10 +36,11 @@ async fn handle_connection(raw_stream: TcpStream, peers: Peers) {
                     let peer_ws_stream = accept_async(new_stream)
                         .await
                         .expect("WebSocket handshake failed");
-                    peers.lock().unwrap().insert(peer_addr, peer_ws_stream);
+                    peers.lock().await.insert(peer_addr, peer_ws_stream);
                 }
                 PeerMessage::Data(data) => {
-                    for (_addr, peer) in peers.lock().unwrap().iter_mut() {
+                    let mut peers_guard = peers.lock().await;
+                    for (_addr, peer) in peers_guard.iter_mut() {
                         peer.send(Message::Binary(data.clone()))
                             .await
                             .expect("Failed to send data to peer");
@@ -68,14 +70,15 @@ async fn route_traffic(peers: Peers) {
         buf.truncate(n);
 
         // Send the data to all peers
-        for (_addr, peer) in peers.lock().unwrap().iter_mut() {
+        let mut peers_guard = peers.lock().await;
+        for (_addr, peer) in peers_guard.iter_mut() {
             peer.send(Message::Binary(buf.clone()))
                 .await
                 .expect("Failed to send data to peer");
         }
 
         // If you want to receive data from peers and write it back to the TUN interface
-        for (_addr, peer) in peers.lock().unwrap().iter_mut() {
+        for (_addr, peer) in peers_guard.iter_mut() {
             if let Some(Ok(Message::Binary(data))) = peer.next().await {
                 writer.write_all(&data).await.unwrap();
             }
