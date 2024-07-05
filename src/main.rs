@@ -1,5 +1,8 @@
 mod client;
 mod server;
+use crate::client::{route_traffic, PeerMessage};
+use crate::server::run_server;
+use crate::tungstenite::Message;
 use futures_util::SinkExt;
 use std::env;
 use tokio_tungstenite::connect_async;
@@ -19,15 +22,15 @@ async fn client_run() {
         .expect("Failed to connect to server");
 
     // Send connect message to the server
-    let connect_msg = crate::client::PeerMessage::Connect(peer_addr.clone());
+    let connect_msg = PeerMessage::Connect(peer_addr.clone());
     let connect_msg = serde_json::to_string(&connect_msg).unwrap();
-    ws_stream
-        .send(tungstenite::protocol::Message(connect_msg))
-        .await
-        .unwrap();
+    ws_stream.send(Message::Text(connect_msg)).await.unwrap();
 
     // Start routing traffic through the server
     route_traffic(ws_stream).await;
 }
 
-fn main() {}
+fn main() {
+    client_run();
+    server::run_server();
+}

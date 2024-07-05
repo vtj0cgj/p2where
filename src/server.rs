@@ -110,7 +110,7 @@ async fn route_traffic(peers: Peers) {
 }
 
 #[tokio::main]
-async fn run_server() {
+pub async fn run_server() {
     let addr = "0.0.0.0:8080";
     let listener = TcpListener::bind(addr).await.expect("Failed to bind");
     let peers: Peers = Arc::new(Mutex::new(HashMap::new()));

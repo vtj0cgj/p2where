@@ -15,7 +15,9 @@ pub enum PeerMessage {
     Data(Vec<u8>),   // Data to route
 }
 
-async fn route_traffic(ws_stream: tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>) {
+pub async fn route_traffic(
+    ws_stream: tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>,
+) {
     // Create a TUN device
     let tun = TunBuilder::new()
         .name("tun0") // if name is empty, then it is set by kernel.
@@ -65,27 +67,4 @@ async fn route_traffic(ws_stream: tokio_tungstenite::WebSocketStream<MaybeTlsStr
 
     // Await both tasks to run concurrently
     tokio::try_join!(send_task, receive_task).unwrap();
-}
-
-#[tokio::main]
-async fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 3 {
-        eprintln!("Usage: {} <server_addr> <peer_addr>", args[0]);
-        return;
-    }
-    let server_addr = &args[1];
-    let peer_addr = &args[2];
-
-    let (mut ws_stream, _) = connect_async(format!("ws://{}", server_addr))
-        .await
-        .expect("Failed to connect to server");
-
-    // Send connect message to the server
-    let connect_msg = PeerMessage::Connect(peer_addr.clone());
-    let connect_msg = serde_json::to_string(&connect_msg).unwrap();
-    ws_stream.send(Message::Text(connect_msg)).await.unwrap();
-
-    // Start routing traffic through the server
-    route_traffic(ws_stream).await;
 }
