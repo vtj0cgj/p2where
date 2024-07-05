@@ -1,21 +1,21 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
 use tokio_tun::TunBuilder;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::MaybeTlsStream;
 
 #[derive(Serialize, Deserialize)]
-enum PeerMessage {
+pub enum PeerMessage {
+    // Make PeerMessage public
     Connect(String), // IP address to connect to
     Data(Vec<u8>),   // Data to route
 }
 
-async fn route_traffic(ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>) {
+async fn route_traffic(ws_stream: tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>) {
     // Create a TUN device
     let tun = TunBuilder::new()
         .name("tun0") // if name is empty, then it is set by kernel.
@@ -77,7 +77,7 @@ async fn main() {
     let server_addr = &args[1];
     let peer_addr = &args[2];
 
-    let (ws_stream, _) = connect_async(format!("ws://{}", server_addr))
+    let (mut ws_stream, _) = connect_async(format!("ws://{}", server_addr))
         .await
         .expect("Failed to connect to server");
 
